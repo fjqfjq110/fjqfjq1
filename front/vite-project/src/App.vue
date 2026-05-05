@@ -1,7 +1,10 @@
 <template>
   <div class="lof-app">
     <div class="header">
-      <h2>LOF 基金实时溢价监控</h2>
+      <div class="title">
+        <h2>LOF 基金实时溢价监控</h2>
+        <span v-if="lastUpdateTime" class="update-time">数据更新时间：{{ lastUpdateTime }}</span>
+      </div>
       <div class="tool-bar">
         <div class="refresh">
           <button @click="manualRefresh" :disabled="loading">
@@ -71,6 +74,12 @@ const sortType = ref('desc')
 const searchCode = ref('')
 const searchName = ref('')
 const filterStatus = ref('')
+const lastUpdateTime = ref('')
+
+function formatTime(date) {
+  const pad = n => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
 
 // 申购状态选项
 const statusOptions = computed(() => {
@@ -113,6 +122,7 @@ async function fetchData() {
     const res = await axios.get(API_URL)
     if (res.data.code === 200) {
       fundList.value = res.data.data
+      lastUpdateTime.value = formatTime(new Date())
     } else {
       error.value = res.data.msg
     }
@@ -157,6 +167,15 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+.title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.update-time {
+  font-size: 13px;
+  color: #999;
 }
 .tool-bar {
   display: flex;
