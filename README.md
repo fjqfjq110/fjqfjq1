@@ -29,6 +29,10 @@ lof_project/
 
 ## 一、后端服务
 
+### 前置要求
+
+- Python 3.10+（[下载地址](https://www.python.org/downloads/)）
+
 ### 1. 安装依赖
 
 ```bash
@@ -38,7 +42,11 @@ cd back
 python -m venv venv
 
 # 激活虚拟环境
+# macOS / Linux
 source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
 
 # 安装依赖
 pip install -r requirements.txt
@@ -72,6 +80,8 @@ uvicorn main:app --reload --port 8000
 
 前端项目通过 `.nvmrc` 文件锁定 Node 版本（当前为 `v22.21.1`）。
 
+**macOS / Linux：**
+
 ```bash
 cd front/vite-project
 
@@ -81,6 +91,17 @@ nvm use
 # 如果该版本未安装，先安装再切换
 nvm install
 nvm use
+```
+
+**Windows：**
+
+Windows 版 nvm 不支持自动读取 `.nvmrc`，需显式指定版本号：
+
+```bash
+cd front/vite-project
+
+nvm install v22.21.1
+nvm use v22.21.1
 ```
 
 ### 2. 安装依赖
