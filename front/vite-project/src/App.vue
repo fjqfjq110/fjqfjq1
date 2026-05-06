@@ -28,7 +28,6 @@
       <el-button @click="resetFilter" :icon="RefreshRight">重置</el-button>
     </div>
 
-    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon style="margin-bottom: 12px;" />
     <el-table :data="displayList" v-loading="loading" height="700" border>
       <el-table-column prop="fundCode" label="基金代码" align="center" />
       <el-table-column prop="fundName" label="基金名称" align="center" />
@@ -65,6 +64,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 import { Refresh, RefreshRight } from '@element-plus/icons-vue'
 
 // 后端接口地址
@@ -72,7 +72,6 @@ const API_URL = 'http://127.0.0.1:8000/api/lof'
 
 const fundList = ref([])
 const loading = ref(false)
-const error = ref('')
 const sortType = ref('desc')
 const searchCode = ref('')
 const searchName = ref('')
@@ -120,17 +119,16 @@ function resetFilter() {
 async function fetchData() {
   if (loading.value) return
   loading.value = true
-  error.value = ''
   try {
     const res = await axios.get(API_URL)
     if (res.data.code === 200) {
       fundList.value = res.data.data
       lastUpdateTime.value = formatTime(new Date())
     } else {
-      error.value = res.data.msg
+      ElMessage.error(res.data.msg || '数据获取失败')
     }
   } catch (err) {
-    error.value = '请求失败：请确认 Python 后端已启动'
+    ElMessage.error('请求失败：请确认 Python 后端已启动')
   } finally {
     loading.value = false
   }
@@ -196,13 +194,6 @@ button {
   gap: 10px;
   margin-bottom: 12px;
   flex-wrap: wrap;
-}
-.loading, .error {
-  padding: 20px;
-  text-align: center;
-}
-.error {
-  color: #f53f3f;
 }
 .rate-up {
   color: #f53f3f;
