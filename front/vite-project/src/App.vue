@@ -56,6 +56,8 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column prop="fundSize" label="基金规模" align="center" />
+      <el-table-column prop="turnover" label="成交额" align="center" />
     </el-table>
   </div>
 </template>

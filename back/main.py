@@ -27,6 +27,17 @@ def format_limit(value):
     return f"{value / 10000:.0f}万/日"
 
 
+def format_amount(value):
+    """格式化金额：成交额/总市值"""
+    if pd.isna(value):
+        return "-"
+    if value >= 1e8:
+        return f"{value / 1e8:.2f}亿"
+    if value >= 1e4:
+        return f"{value / 1e4:.2f}万"
+    return f"{value:.0f}"
+
+
 @app.get("/api/lof")
 def get_lof_data():
     """获取 LOF 实时数据 + 溢价率 + 限额"""
@@ -56,13 +67,18 @@ def get_lof_data():
         # 5. 格式化限额
         df["限额"] = df["日累计限定金额"].apply(format_limit)
 
-        # 6. 只保留需要的字段
+        # 6. 格式化总市值和成交额
+        df["总市值_格式化"] = df["总市值"].apply(format_amount)
+        df["成交额_格式化"] = df["成交额"].apply(format_amount)
+
+        # 7. 只保留需要的字段
         df = df[[
             "代码", "名称", "最新价", "涨跌幅",
-            "最新净值/万份收益", "溢价率", "限额", "申购状态"
+            "最新净值/万份收益", "溢价率", "限额", "申购状态",
+            "总市值_格式化", "成交量", "成交额_格式化"
         ]]
 
-        # 7. 格式化字段名（给前端用）
+        # 8. 格式化字段名（给前端用）
         df.columns = [
             "fundCode",
             "fundName",
@@ -71,7 +87,10 @@ def get_lof_data():
             "netValue",
             "premiumRate",
             "purchaseLimit",
-            "purchaseStatus"
+            "purchaseStatus",
+            "fundSize",
+            "volume",
+            "turnover"
         ]
 
         # 8. 处理 NaN 值，避免 JSON 序列化失败
