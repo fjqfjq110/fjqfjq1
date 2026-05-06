@@ -3,18 +3,18 @@
     <div class="header">
       <div class="title">
         <h2>LOF 基金实时溢价监控</h2>
-        <span v-if="lastUpdateTime" class="update-time">数据更新时间：{{ lastUpdateTime }}</span>
+        <span class="update-time">数据更新时间：{{ lastUpdateTime }}</span>
       </div>
       <div class="tool-bar">
         <div class="refresh">
-          <button @click="manualRefresh" :disabled="loading">
+          <el-button @click="manualRefresh" :loading="loading" type="primary" :icon="Refresh">
             手动刷新
-          </button>
+          </el-button>
         </div>
         <div class="sort">
-          <button @click="toggleSort" :disabled="loading">
+          <el-button @click="toggleSort" :disabled="loading">
             溢价率 {{ sortType === 'desc' ? '从高到低' : '从低到高' }}
-          </button>
+          </el-button>
         </div>
       </div>
     </div>
@@ -25,7 +25,7 @@
       <el-select v-model="filterStatus" placeholder="申购状态" clearable style="width: 140px;">
         <el-option v-for="s in statusOptions" :key="s" :label="s" :value="s" />
       </el-select>
-      <el-button @click="resetFilter">重置</el-button>
+      <el-button @click="resetFilter" :icon="RefreshRight">重置</el-button>
     </div>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon style="margin-bottom: 12px;" />
@@ -49,9 +49,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="purchaseLimit" label="日限额" align="center" />
-      <el-table-column label="申购状态" align="center">
+      <el-table-column label="申购状态" align="center" width="120">
         <template #default="{ row }">
-          <el-tag :type="row.purchaseStatus === '暂停申购' ? 'danger' : row.purchaseStatus === '开放申购' ? 'success' : 'info'" size="small">
+          <el-tag :type="row.purchaseStatus === '暂停申购' ? 'danger' : row.purchaseStatus === '开放申购' ? 'success' : 'info'" size="small" style="white-space: nowrap;">
             {{ row.purchaseStatus }}
           </el-tag>
         </template>
@@ -65,6 +65,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
+import { Refresh, RefreshRight } from '@element-plus/icons-vue'
 
 // 后端接口地址
 const API_URL = 'http://127.0.0.1:8000/api/lof'
@@ -162,7 +163,7 @@ onMounted(() => {
 .lof-app {
   max-width: 100%;
   /* margin: 20px auto; */
-  padding: 0 24px;
+  padding: 24px;
 }
 .header {
   display: flex;
@@ -178,6 +179,7 @@ onMounted(() => {
 .update-time {
   font-size: 13px;
   color: #999;
+  text-align: left;
 }
 .tool-bar {
   display: flex;
