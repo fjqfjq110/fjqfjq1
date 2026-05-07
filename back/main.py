@@ -115,6 +115,23 @@ def fetch_purchase_data():
     return df[["基金代码", "最新净值/万份收益", "日累计限定金额", "申购状态"]]
 
 
+def fetch_estimate_data():
+    """获取基金实时估算净值（东方财富估值数据）"""
+    try:
+        df = ak.fund_value_estimation_em()
+        # 列名格式如：2026-05-07-估算数据-估算值，每天日期会变，需要模糊匹配
+        estimate_col = [c for c in df.columns if "估算数据-估算值" in c]
+        if not estimate_col:
+            logger.warning("未找到估算净值列，返回空数据")
+            return pd.DataFrame(columns=["基金代码", "估算净值"])
+        df = df.rename(columns={estimate_col[0]: "估算净值"})
+        df["估算净值"] = pd.to_numeric(df["估算净值"], errors="coerce")
+        return df[["基金代码", "估算净值"]].copy()
+    except Exception as e:
+        logger.warning("获取估算净值失败：%s", e)
+        return pd.DataFrame(columns=["基金代码", "估算净值"])
+
+
 @app.get("/api/lof")
 def get_lof_data():
     """获取 LOF 实时数据 + 溢价率 + 限额"""
@@ -134,18 +151,37 @@ def get_lof_data():
             purchase = future.result(timeout=30)
         logger.info("基金净值/限额数据获取成功，共 %d 条", len(purchase))
 
+        # 2.5 获取实时估算净值（带 30 秒超时）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fetch_estimate_data)
+            estimate = future.result(timeout=30)
+        logger.info("基金估算净值获取成功，共 %d 条", len(estimate))
+
         # 3. 合并数据
         df = spot.merge(
             purchase,
             left_on="代码",
             right_on="基金代码",
             how="left"
+        ).merge(
+            estimate,
+            left_on="代码",
+            right_on="基金代码",
+            how="left"
         )
 
         # 4. 计算溢价率
+        # 静态溢价率：基于最新公布的收盘净值（通常是昨日）
         df["溢价率"] = (
             (df["最新价"] - df["最新净值/万份收益"])
             / df["最新净值/万份收益"]
+            * 100
+        ).round(2)
+
+        # 动态溢价率（估算溢价率）：基于实时估算净值，交易时间内更真实
+        df["估算溢价率"] = (
+            (df["最新价"] - df["估算净值"])
+            / df["估算净值"]
             * 100
         ).round(2)
 
@@ -159,7 +195,8 @@ def get_lof_data():
         # 7. 只保留需要的字段
         df = df[[
             "代码", "名称", "最新价", "涨跌幅",
-            "最新净值/万份收益", "溢价率", "限额", "申购状态",
+            "最新净值/万份收益", "估算净值", "溢价率", "估算溢价率",
+            "限额", "申购状态",
             "总市值_格式化", "成交量", "成交额_格式化"
         ]]
 
@@ -170,7 +207,9 @@ def get_lof_data():
             "tradePrice",
             "increaseRate",
             "netValue",
+            "estimateValue",
             "premiumRate",
+            "estimatePremiumRate",
             "purchaseLimit",
             "purchaseStatus",
             "fundSize",
