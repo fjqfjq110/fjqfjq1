@@ -12,8 +12,12 @@
           </el-button>
         </div>
         <div class="sort">
-          <el-button @click="toggleSort" :disabled="loading">
-            溢价率 {{ sortType === 'desc' ? '从高到低' : '从低到高' }}
+          <span class="sort-label">排序依据</span>
+          <el-button @click="toggleSortField" :disabled="loading" size="small">
+            {{ sortField === 'premiumRate' ? '按昨日净值溢价' : '按实时估算溢价' }}
+          </el-button>
+          <el-button @click="toggleSort" :disabled="loading" size="small">
+            {{ sortType === 'desc' ? '▼ 从高到低' : '▲ 从低到高' }}
           </el-button>
         </div>
       </div>
@@ -32,7 +36,8 @@
       <el-table-column prop="fundCode" label="基金代码" align="center" />
       <el-table-column prop="fundName" label="基金名称" align="center" />
       <el-table-column prop="tradePrice" label="场内价格" align="center" />
-      <el-table-column prop="netValue" label="场外净值" align="center" />
+      <el-table-column prop="netValue" label="场外净值(昨日)" align="center" />
+      <el-table-column prop="estimateValue" label="估算净值(实时)" align="center" />
       <el-table-column label="涨跌幅" align="center">
         <template #default="{ row }">
           <span :class="getRateClass(row.increaseRate)">
@@ -40,10 +45,17 @@
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="溢价率" align="center">
+      <el-table-column label="溢价率(昨日)" align="center">
         <template #default="{ row }">
           <span :class="getRateClass(row.premiumRate)">
             {{ row.premiumRate }}%
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="溢价率(实时)" align="center">
+        <template #default="{ row }">
+          <span :class="getRateClass(row.estimatePremiumRate)">
+            {{ row.estimatePremiumRate }}%
           </span>
         </template>
       </el-table-column>
@@ -73,6 +85,7 @@ const API_URL = 'http://127.0.0.1:8000/api/lof'
 const fundList = ref([])
 const loading = ref(false)
 const sortType = ref('desc')
+const sortField = ref('premiumRate')
 const searchCode = ref('')
 const searchName = ref('')
 const filterStatus = ref('')
@@ -102,8 +115,9 @@ const displayList = computed(() => {
     list = list.filter(i => i.purchaseStatus === filterStatus.value)
   }
   list.sort((a, b) => {
-    const pa = parseFloat(a.premiumRate) || 0
-    const pb = parseFloat(b.premiumRate) || 0
+    const field = sortField.value
+    const pa = parseFloat(a[field]) || 0
+    const pb = parseFloat(b[field]) || 0
     return sortType.value === 'desc' ? pb - pa : pa - pb
   })
   return list
@@ -142,6 +156,10 @@ function manualRefresh() {
 // 切换排序
 function toggleSort() {
   sortType.value = sortType.value === 'desc' ? 'asc' : 'desc'
+}
+
+function toggleSortField() {
+  sortField.value = sortField.value === 'premiumRate' ? 'estimatePremiumRate' : 'premiumRate'
 }
 
 // 颜色样式
@@ -188,6 +206,16 @@ button {
   cursor: pointer;
   border-radius: 4px;
   border: 1px solid #ccc;
+}
+.sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sort-label {
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
 }
 .filter-bar {
   display: flex;
