@@ -29,6 +29,10 @@
       <el-select v-model="filterStatus" placeholder="申购状态" clearable style="width: 140px;">
         <el-option v-for="s in statusOptions" :key="s" :label="s" :value="s" />
       </el-select>
+      <el-radio-group v-model="showOnlyFavorites" size="small">
+        <el-radio-button :label="false">全部基金</el-radio-button>
+        <el-radio-button :label="true">我的关注</el-radio-button>
+      </el-radio-group>
       <el-button @click="resetFilter" :icon="RefreshRight">重置</el-button>
     </div>
 
@@ -69,6 +73,14 @@
       </el-table-column>
       <el-table-column prop="fundSize" label="基金规模" align="center" />
       <el-table-column prop="turnover" label="成交额" align="center" />
+      <el-table-column label="关注" align="center" width="70" fixed="right">
+        <template #default="{ row }">
+          <el-switch
+            :model-value="favorites.has(row.fundCode)"
+            @change="(val) => toggleFavorite(row.fundCode, val)"
+          />
+        </template>
+      </el-table-column>
     </el-table>
   </div>
 </template>
@@ -82,6 +94,59 @@ import { Refresh, RefreshRight } from '@element-plus/icons-vue'
 // 后端接口地址
 const API_URL = 'http://127.0.0.1:8000/api/lof'
 
+// ========== IndexedDB 收藏 ==========
+const DB_NAME = 'lof-monitor'
+const DB_VERSION = 1
+const STORE_NAME = 'favorites'
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => resolve(request.result)
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'fundCode' })
+      }
+    }
+  })
+}
+
+async function addFavoriteDB(fundCode) {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    const request = store.put({ fundCode, time: Date.now() })
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function removeFavoriteDB(fundCode) {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    const request = store.delete(fundCode)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function getAllFavoritesDB() {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const store = tx.objectStore(STORE_NAME)
+    const request = store.getAll()
+    request.onsuccess = () => resolve(request.result.map(item => item.fundCode))
+    request.onerror = () => reject(request.error)
+  })
+}
+// ========== IndexedDB 结束 ==========
+
 const fundList = ref([])
 const loading = ref(false)
 const sortType = ref('desc')
@@ -90,6 +155,8 @@ const searchCode = ref('')
 const searchName = ref('')
 const filterStatus = ref('')
 const lastUpdateTime = ref('')
+const favorites = ref(new Set())
+const showOnlyFavorites = ref(false)
 
 function formatTime(date) {
   const pad = n => String(n).padStart(2, '0')
@@ -105,6 +172,9 @@ const statusOptions = computed(() => {
 // 筛选 + 排序
 const displayList = computed(() => {
   let list = [...fundList.value]
+  if (showOnlyFavorites.value) {
+    list = list.filter(i => favorites.value.has(i.fundCode))
+  }
   if (searchCode.value) {
     list = list.filter(i => String(i.fundCode).includes(searchCode.value.trim()))
   }
@@ -127,6 +197,7 @@ function resetFilter() {
   searchCode.value = ''
   searchName.value = ''
   filterStatus.value = ''
+  showOnlyFavorites.value = false
 }
 
 // 获取数据
@@ -170,7 +241,32 @@ function getRateClass(rate) {
   return 'rate-zero'
 }
 
+async function loadFavorites() {
+  try {
+    const codes = await getAllFavoritesDB()
+    favorites.value = new Set(codes)
+  } catch (e) {
+    console.error('加载收藏失败', e)
+  }
+}
+
+async function toggleFavorite(fundCode, isChecked) {
+  try {
+    if (isChecked) {
+      await addFavoriteDB(fundCode)
+      favorites.value.add(fundCode)
+    } else {
+      await removeFavoriteDB(fundCode)
+      favorites.value.delete(fundCode)
+    }
+  } catch (e) {
+    console.error('收藏操作失败', e)
+    ElMessage.error('收藏操作失败')
+  }
+}
+
 onMounted(() => {
+  loadFavorites()
   fetchData()
 })
 </script>
@@ -222,6 +318,7 @@ button {
   gap: 10px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+  align-items: center;
 }
 .rate-up {
   color: #f53f3f;
