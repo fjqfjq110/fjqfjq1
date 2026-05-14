@@ -15,6 +15,7 @@
 
 ```
 lof_project/
+├── start.sh            # 一键启动脚本
 ├── back/               # 后端服务
 │   ├── main.py         # FastAPI 主程序
 │   └── requirements.txt
@@ -27,7 +28,23 @@ lof_project/
 
 ---
 
-## 一、后端服务
+## 快速启动（推荐）
+
+> 一键同时启动前后端，自动切换 Node 版本。
+
+```bash
+./start.sh
+```
+
+脚本会自动完成：
+
+1. 激活后端 Python 虚拟环境，启动 FastAPI（`http://localhost:8000`）
+2. 通过 `nvm use` 切换到 `.nvmrc` 指定的 Node 版本，启动 Vite 开发服务器（`http://localhost:5173`）
+3. 按 `Ctrl+C` 同时停止所有服务
+
+---
+
+## 一、后端服务（手动启动）
 
 ### 前置要求
 
@@ -72,7 +89,7 @@ uvicorn main:app --reload --port 8000
 
 ---
 
-## 二、前端服务
+## 二、前端服务（手动启动）
 
 > **前置要求**：电脑上需安装 [nvm](https://github.com/nvm-sh/nvm)（Node 版本管理工具）。
 
