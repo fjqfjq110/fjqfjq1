@@ -6,20 +6,9 @@
         <span class="update-time">数据更新时间：{{ lastUpdateTime }}</span>
       </div>
       <div class="tool-bar">
-        <div class="refresh">
-          <el-button @click="manualRefresh" :loading="loading" type="primary" :icon="Refresh">
-            手动刷新
-          </el-button>
-        </div>
-        <div class="sort">
-          <span class="sort-label">排序依据</span>
-          <el-button @click="toggleSortField" :disabled="loading" size="small">
-            {{ sortField === 'premiumRate' ? '按昨日净值溢价' : '按实时估算溢价' }}
-          </el-button>
-          <el-button @click="toggleSort" :disabled="loading" size="small">
-            {{ sortType === 'desc' ? '▼ 从高到低' : '▲ 从低到高' }}
-          </el-button>
-        </div>
+        <el-button @click="manualRefresh" :loading="loading" type="primary" :icon="Refresh">
+          手动刷新
+        </el-button>
       </div>
     </div>
 
@@ -36,34 +25,34 @@
       <el-button @click="resetFilter" :icon="RefreshRight">重置</el-button>
     </div>
 
-    <el-table :data="displayList" v-loading="loading" height="700" border>
-      <el-table-column prop="fundCode" label="基金代码" align="center" />
-      <el-table-column prop="fundName" label="基金名称" align="center" />
-      <el-table-column prop="tradePrice" label="场内价格" align="center" />
-      <el-table-column prop="netValue" label="场外净值(昨日)" align="center" />
-      <el-table-column prop="estimateValue" label="估算净值(实时)" align="center" />
-      <el-table-column label="涨跌幅" align="center">
+    <el-table :data="displayList" v-loading="loading" height="900" border :default-sort="{ prop: 'premiumRate', order: 'descending' }" style="width: 100%">
+      <el-table-column prop="fundCode" label="基金代码" align="center" min-width="100" />
+      <el-table-column prop="fundName" label="基金名称" align="center" min-width="130" />
+      <el-table-column prop="tradePrice" label="场内价格" align="center" min-width="110" sortable :sort-method="(a, b) => numericSort(a, b, 'tradePrice')" />
+      <el-table-column prop="netValue" label="场外净值(昨日)" align="center" min-width="140" sortable :sort-method="(a, b) => numericSort(a, b, 'netValue')" />
+      <el-table-column prop="estimateValue" label="估算净值(实时)" align="center" min-width="140" sortable :sort-method="(a, b) => numericSort(a, b, 'estimateValue')" />
+      <el-table-column prop="increaseRate" label="涨跌幅" align="center" min-width="110" sortable :sort-method="(a, b) => numericSort(a, b, 'increaseRate')">
         <template #default="{ row }">
           <span :class="getRateClass(row.increaseRate)">
             {{ row.increaseRate }}%
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="溢价率(昨日)" align="center">
+      <el-table-column prop="premiumRate" label="溢价率(昨日)" align="center" min-width="130" sortable :sort-method="(a, b) => numericSort(a, b, 'premiumRate')">
         <template #default="{ row }">
           <span :class="getRateClass(row.premiumRate)">
             {{ row.premiumRate }}%
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="溢价率(实时)" align="center">
+      <el-table-column prop="estimatePremiumRate" label="溢价率(实时)" align="center" min-width="130" sortable :sort-method="(a, b) => numericSort(a, b, 'estimatePremiumRate')">
         <template #default="{ row }">
           <span :class="getRateClass(row.estimatePremiumRate)">
             {{ row.estimatePremiumRate }}%
           </span>
         </template>
       </el-table-column>
-      <el-table-column prop="purchaseLimit" label="日限额" align="center" />
+      <el-table-column prop="purchaseLimit" label="日限额" align="center" min-width="110" sortable :sort-method="(a, b) => numericSort(a, b, 'purchaseLimit')" />
       <el-table-column label="申购状态" align="center" width="120">
         <template #default="{ row }">
           <el-tag :type="row.purchaseStatus === '暂停申购' ? 'danger' : row.purchaseStatus === '开放申购' ? 'success' : 'info'" size="small" style="white-space: nowrap;">
@@ -71,8 +60,8 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="fundSize" label="基金规模" align="center" />
-      <el-table-column prop="turnover" label="成交额" align="center" />
+      <el-table-column prop="fundSize" label="基金规模" align="center" min-width="110" sortable :sort-method="(a, b) => numericSort(a, b, 'fundSize')" />
+      <el-table-column prop="turnover" label="成交额" align="center" min-width="110" sortable :sort-method="(a, b) => numericSort(a, b, 'turnover')" />
       <el-table-column label="关注" align="center" width="70" fixed="right">
         <template #default="{ row }">
           <el-switch
@@ -149,8 +138,6 @@ async function getAllFavoritesDB() {
 
 const fundList = ref([])
 const loading = ref(false)
-const sortType = ref('desc')
-const sortField = ref('premiumRate')
 const searchCode = ref('')
 const searchName = ref('')
 const filterStatus = ref('')
@@ -169,7 +156,7 @@ const statusOptions = computed(() => {
   return Array.from(set).sort()
 })
 
-// 筛选 + 排序
+// 筛选
 const displayList = computed(() => {
   let list = [...fundList.value]
   if (showOnlyFavorites.value) {
@@ -184,12 +171,6 @@ const displayList = computed(() => {
   if (filterStatus.value) {
     list = list.filter(i => i.purchaseStatus === filterStatus.value)
   }
-  list.sort((a, b) => {
-    const field = sortField.value
-    const pa = parseFloat(a[field]) || 0
-    const pb = parseFloat(b[field]) || 0
-    return sortType.value === 'desc' ? pb - pa : pa - pb
-  })
   return list
 })
 
@@ -224,13 +205,11 @@ function manualRefresh() {
   fetchData()
 }
 
-// 切换排序
-function toggleSort() {
-  sortType.value = sortType.value === 'desc' ? 'asc' : 'desc'
-}
-
-function toggleSortField() {
-  sortField.value = sortField.value === 'premiumRate' ? 'estimatePremiumRate' : 'premiumRate'
+// 数值排序方法（供 el-table 列排序使用）
+function numericSort(a, b, prop) {
+  const va = parseFloat(a[prop]) || 0
+  const vb = parseFloat(b[prop]) || 0
+  return va - vb
 }
 
 // 颜色样式
@@ -273,9 +252,12 @@ onMounted(() => {
 
 <style scoped>
 .lof-app {
-  max-width: 100%;
-  /* margin: 20px auto; */
   padding: 24px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  overflow-x: auto;
 }
 .header {
   display: flex;
@@ -302,16 +284,6 @@ button {
   cursor: pointer;
   border-radius: 4px;
   border: 1px solid #ccc;
-}
-.sort {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sort-label {
-  font-size: 13px;
-  color: #666;
-  white-space: nowrap;
 }
 .filter-bar {
   display: flex;
