@@ -19,6 +19,27 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# 清理指定端口上的旧进程
+kill_port() {
+    local port=$1
+    local name=$2
+    local pids=$(lsof -ti:$port 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+    if [ ! -z "$pids" ]; then
+        log_warn "$name 端口 $port 已被占用，正在关闭旧进程 (PID: $pids)"
+        kill $pids 2>/dev/null || true
+        sleep 2
+        # 确认端口已释放
+        local remaining=$(lsof -ti:$port 2>/dev/null)
+        if [ ! -z "$remaining" ]; then
+            remaining=$(echo "$remaining" | tr '\n' ' ' | sed 's/ $//')
+            log_warn "进程未响应 SIGTERM，强制终止 (PID: $remaining)"
+            kill -9 $remaining 2>/dev/null || true
+            sleep 1
+        fi
+        log_info "$name 端口 $port 已释放"
+    fi
+}
+
 # 清理子进程
 cleanup() {
     log_info "正在停止所有服务..."
@@ -36,6 +57,9 @@ trap cleanup SIGINT SIGTERM
 
 # ========== 后端启动 ==========
 start_backend() {
+    # 先清理占用端口的老进程
+    kill_port 8000 "后端"
+
     log_info "启动后端服务..."
 
     cd "$BACK_DIR"
@@ -55,6 +79,9 @@ start_backend() {
 
 # ========== 前端启动 ==========
 start_frontend() {
+    # 先清理占用端口的老进程
+    kill_port 5173 "前端"
+
     log_info "启动前端服务..."
 
     cd "$FRONT_DIR"
@@ -79,7 +106,7 @@ start_frontend() {
     # 启动前端
     npm run dev &
     FRONT_PID=$!
-    log_info "前端服务已启动 (PID: $FRONT_PID)"
+    log_info "前端服务已启动 (PID: $FRONT_PID, http://localhost:5173)"
 }
 
 # ========== 主流程 ==========
