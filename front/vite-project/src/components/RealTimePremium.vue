@@ -316,9 +316,8 @@ button {
 .fund-code-link {
   color: #409eff;
   cursor: pointer;
-  text-decoration: none;
-}
-.fund-code-link:hover {
+  /* text-decoration: none; */
   text-decoration: underline;
 }
+
 </style>
