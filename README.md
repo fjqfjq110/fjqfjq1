@@ -15,11 +15,24 @@
 
 ```
 lof_project/
-├── start.sh            # 一键启动脚本
-├── back/               # 后端服务
-│   ├── main.py         # FastAPI 主程序
+├── start.sh                    # 一键启动脚本
+├── back/                       # 后端服务
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py             # FastAPI 应用入口
+│   │   ├── cache.py            # 缓存管理
+│   │   ├── routers/
+│   │   │   ├── __init__.py
+│   │   │   └── lof.py          # LOF 接口控制器
+│   │   ├── services/
+│   │   │   ├── __init__.py
+│   │   │   └── fetcher.py      # 数据获取服务
+│   │   └── utils/
+│   │       ├── __init__.py
+│   │       └── formatters.py   # 格式化工具
+│   ├── run.py                  # uvicorn 启动入口
 │   └── requirements.txt
-├── front/              # 前端项目
+├── front/                      # 前端项目
 │   └── vite-project/
 │       ├── package.json
 │       └── src/
@@ -75,12 +88,14 @@ pip install -r requirements.txt
 # 确保在 back 目录且虚拟环境已激活
 source venv/bin/activate
 
-uvicorn main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
-- `main:app` — `main.py` 中的 `app` 实例
+- `app.main:app` — `app/main.py` 中的 `app` 实例
 - `--reload` — 开发模式，代码修改自动重启
 - `--port 8000` — 服务端口
+
+> 也可使用 `python run.py` 启动（已内置 reload + 0.0.0.0 配置）。
 
 ### 3. 验证
 
@@ -145,9 +160,11 @@ npm run build
 
 ## 三、接口说明
 
+完整的 API 文档可在启动后端后访问：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
 ### GET `/api/lof`
 
-获取全量 LOF 实时数据。
+获取全量 LOF 实时数据（交易价、净值、溢价率、限额等）。
 
 **返回字段：**
 
@@ -157,16 +174,46 @@ npm run build
 | `fundName` | string | 基金名称 |
 | `tradePrice` | number | 最新交易价 |
 | `increaseRate` | number | 涨跌幅（%）|
-| `netValue` | number | 最新净值 |
-| `premiumRate` | number | 溢价率（%）|
-| `purchaseLimit` | string | 日申购限额 |
+| `netValue` | number | 最新净值/万份收益 |
+| `estimateValue` | number | 实时估算净值 |
+| `premiumRate` | number | 静态溢价率（%），基于最新收盘净值 |
+| `estimatePremiumRate` | number | 估算溢价率（%），基于实时估算净值 |
+| `purchaseLimit` | string | 日申购限额（格式化后） |
 | `purchaseStatus` | string | 申购状态 |
+| `fundSize` | string | 总市值（格式化后） |
+| `volume` | number | 成交量（手） |
+| `turnover` | string | 成交额（格式化后） |
 
 **限额显示规则：**
 - `不限` — 日限额 ≥ 1 亿
-- `暂停申购` — 日限额为 0
+- `-` — 日限额为 0 或空值
 - `xx元/日` — 日限额 < 1 万
 - `xx万/日` — 日限额 ≥ 1 万
+
+### GET `/api/lof/history`
+
+获取单只 LOF 基金的历史数据（价格、净值、溢价率、成交额、场内份额）。
+
+**请求参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `fund_code` | string | 是 | 基金代码，如 `161725` |
+| `fund_name` | string | 否 | 基金名称 |
+
+**返回字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `date` | string | 交易日期（YYYY-MM-DD） |
+| `price` | number | 当日收盘价 |
+| `navDate` | string | 净值对应日期（上一交易日） |
+| `nav` | number | 基金净值 |
+| `premiumRate` | number | 溢价率（%） |
+| `turnover` | number | 成交额（万元） |
+| `shareVolume` | number | 场内份额（万份） |
+| `changeAmount` | number | 场内份额变化量（万份） |
+| `changePct` | number | 场内份额变化率（%） |
 
 ---
 
