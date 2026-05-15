@@ -1,6 +1,7 @@
 """LOF 基金相关 API 路由"""
 import concurrent.futures
 import logging
+import re
 
 import pandas as pd
 import requests
@@ -19,6 +20,53 @@ from app.utils.formatters import format_limit, format_amount
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/lof", tags=["LOF"])
+
+# 基金类型缓存
+_fund_type_cache: dict[str, str] = {}
+
+
+def get_fund_type(fund_code: str) -> str:
+    """获取基金类型（如 QDII、商品、混合型等），带缓存"""
+    if fund_code in _fund_type_cache:
+        return _fund_type_cache[fund_code]
+    try:
+        url = f"https://fundf10.eastmoney.com/jbgk_{fund_code}.html"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r.raise_for_status()
+        m = re.search(r"基金类型</th>\s*<td>([^<]+)</td>", r.text)
+        if m:
+            fund_type = m.group(1).strip()
+            _fund_type_cache[fund_code] = fund_type
+            logger.info("基金 %s 类型：%s", fund_code, fund_type)
+            return fund_type
+    except Exception as e:
+        logger.warning("获取基金 %s 类型失败：%s", fund_code, e)
+    return ""
+
+
+def fetch_em_realtime(fund_code: str) -> dict | None:
+    """获取东方财富实时数据（最新价、成交量、成交额、f84）"""
+    try:
+        secid_prefix = "1" if fund_code.startswith(("5", "6", "9")) else "0"
+        secid = f"{secid_prefix}.{fund_code}"
+        url = "https://push2.eastmoney.com/api/qt/stock/get"
+        params = {"secid": secid, "fields": "f43,f47,f48,f84"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://quote.eastmoney.com/",
+        }
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        d = r.json().get("data", {})
+        return {
+            "price": float(d.get("f43", 0)) / 1000,
+            "volume": float(d.get("f47", 0)),  # 手
+            "turnover": float(d.get("f48", 0)),  # 元
+            "f84": float(d.get("f84", 0)),  # 股
+        }
+    except Exception as e:
+        logger.warning("东方财富实时数据获取失败：%s", e)
+    return None
 
 
 @router.get("/history")
@@ -47,7 +95,54 @@ def get_lof_history(
             if price_df is None:
                 return {"code": 404, "msg": f"未找到基金 {fund_code} 的历史价格数据"}
 
-        # 如果是东方财富数据源，用 f84 校准最新一天份额（同花顺不需要）
+        rt_data = None
+
+        # 用东方财富实时数据校准最新一天（同花顺 year.js 最新一天可能缓存未更新）
+        if source == "ths" and not price_df.empty:
+            try:
+                rt_data = fetch_em_realtime(fund_code)
+                if rt_data:
+                    last_idx = price_df.index[-1]
+                    last_date = price_df.loc[last_idx, "date"]
+                    today = pd.Timestamp.now().normalize()
+                    # 只有同花顺最新一天是今天，才用实时数据校准（盘中缓存数据可能异常）
+                    if last_date == today:
+                        ths_price = price_df.loc[last_idx, "price"]
+                        ths_turnover = price_df.loc[last_idx, "turnover"]
+                        price_diff = abs(ths_price - rt_data["price"]) / ths_price if ths_price > 0 else 0
+                        turnover_diff = abs(ths_turnover - rt_data["turnover"] / 10000) / (ths_turnover or 1)
+                        if price_diff > 0.001 or turnover_diff > 0.5:
+                            logger.info(
+                                "基金 %s 同花顺最新一天数据异常，用东方财富校准: 价格 %.3f->%.3f, 成交额 %.2f->%.2f",
+                                fund_code, ths_price, rt_data["price"], ths_turnover, rt_data["turnover"] / 10000,
+                            )
+                            price_df.loc[last_idx, "price"] = rt_data["price"]
+                            price_df.loc[last_idx, "volume"] = rt_data["volume"]
+                            price_df.loc[last_idx, "turnover"] = round(rt_data["turnover"] / 10000, 2)
+            except Exception as e:
+                logger.warning("实时数据校准失败：%s", e)
+
+        # 份额数据与日终结算一致，延后一天显示（T日收盘后结算，T+1日公布）
+        price_df["share_volume"] = price_df["share_volume"].shift(1)
+
+        # 同花顺数据源：对最新一天的 share_volume 用 f84 校准/填充
+        # 同花顺换手率只保留3位小数，低换手率基金（如161226）份额计算误差可达~40万份
+        # f84 是东方财富实时总份额，对LOF基金通常≈场内份额，误差<1%，可用来校准最新一天
+        if source == "ths" and rt_data and rt_data.get("f84"):
+            try:
+                last_idx = price_df.index[-1]
+                f84_share = round(rt_data["f84"] / 10000, 2)
+                current_share = price_df.loc[last_idx, "share_volume"]
+                if pd.isna(current_share):
+                    price_df.loc[last_idx, "share_volume"] = f84_share
+                    logger.info("基金 %s 最新一天份额用 f84 填充: %.2f", fund_code, f84_share)
+                elif current_share > 0 and abs(current_share - f84_share) / current_share < 0.05:
+                    price_df.loc[last_idx, "share_volume"] = f84_share
+                    logger.info("基金 %s 最新一天份额用 f84 校准: %.2f -> %.2f", fund_code, current_share, f84_share)
+            except Exception as e:
+                logger.warning("f84 填充份额失败：%s", e)
+
+        # 如果是东方财富数据源，用 f84 填充最新一天 NaN share_volume
         if source == "em":
             try:
                 qt_url = "https://push2.eastmoney.com/api/qt/stock/get"
@@ -62,15 +157,12 @@ def get_lof_history(
                 f84 = qt_data.get("data", {}).get("f84")
                 if f84 is not None:
                     real_time_share = round(float(f84) / 10000, 2)
-                    if not price_df.empty and price_df.loc[price_df.index[-1], "share_volume"] is not None:
-                        old_val = price_df.loc[price_df.index[-1], "share_volume"]
-                        price_df.loc[price_df.index[-1], "share_volume"] = real_time_share
-                        logger.info("基金 %s 份额校准：%s -> %s (万份)", fund_code, old_val, real_time_share)
+                    last_idx = price_df.index[-1]
+                    if not price_df.empty and pd.isna(price_df.loc[last_idx, "share_volume"]):
+                        price_df.loc[last_idx, "share_volume"] = real_time_share
+                        logger.info("基金 %s 份额用 f84 填充：%.2f (万份)", fund_code, real_time_share)
             except Exception as e:
                 logger.warning("实时份额校准失败：%s", e)
-
-        # 份额数据与日终结算一致，延后一天显示（T日收盘后结算，T+1日公布）
-        price_df["share_volume"] = price_df["share_volume"].shift(1)
 
         # 计算场内新增和份额涨幅
         price_df["change_amount"] = (price_df["share_volume"] - price_df["share_volume"].shift(1)).round(2)
@@ -116,19 +208,35 @@ def get_lof_history(
         nav_df = pd.DataFrame(nav_rows) if nav_rows else pd.DataFrame(columns=["nav_date", "nav"])
         nav_df["nav_date"] = pd.to_datetime(nav_df["nav_date"])
 
-        # 3. 合并价格和净值（每个交易日只使用上一个交易日的净值，与集思录保持一致）
+        # 3. 合并价格和净值
+        # 判断基金类型决定净值匹配策略：QDII 净值延迟，用 T-1；非 QDII 用当天
+        fund_type = get_fund_type(fund_code)
+        is_qdii = "QDII" in fund_type
         nav_df = nav_df.sort_values("nav_date").dropna(subset=["nav"])
 
-        # 获取上一个交易日的日期（price_df 已按日期升序排列）
-        price_df["prev_date"] = price_df["date"].shift(1)
-
-        # 合并上一个交易日的净值
-        merged = price_df.merge(
-            nav_df[["nav_date", "nav"]],
-            left_on="prev_date",
-            right_on="nav_date",
-            how="left"
-        )
+        if is_qdii:
+            # QDII：T日价格对比T-1日净值（净值公布延迟）
+            price_df["prev_date"] = price_df["date"].shift(1)
+            merged = price_df.merge(
+                nav_df[["nav_date", "nav"]],
+                left_on="prev_date",
+                right_on="nav_date",
+                how="left"
+            )
+            merged["nav_date"] = merged["prev_date"].apply(
+                lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else None
+            )
+        else:
+            # 非 QDII（商品、混合型等）：T日价格对比T日净值（当天有就显示，没有就空）
+            merged = price_df.merge(
+                nav_df[["nav_date", "nav"]],
+                left_on="date",
+                right_on="nav_date",
+                how="left"
+            )
+            merged["nav_date"] = merged["date"].apply(
+                lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else None
+            )
 
         # 4. 计算溢价率
         merged["premium_rate"] = (
@@ -137,9 +245,6 @@ def get_lof_history(
 
         # 5. 格式化输出
         merged["date"] = merged["date"].dt.strftime("%Y-%m-%d")
-        merged["nav_date"] = merged["prev_date"].apply(
-            lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else None
-        )
 
         result = merged[["date", "price", "nav_date", "nav", "premium_rate",
                          "turnover", "share_volume", "change_amount", "change_pct"]].copy()
