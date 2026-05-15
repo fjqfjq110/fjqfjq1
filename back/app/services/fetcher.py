@@ -1,57 +1,20 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+"""外部数据获取服务模块"""
 import akshare as ak
 import pandas as pd
 import logging
-import concurrent.futures
 import requests
 import json
 import re
+import time
+from datetime import datetime
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-app = FastAPI()
-
-# 缓存最近一次成功的数据
-cache_data = {"data": [], "time": None}
-
-# 净值/限额数据缓存（该数据变化频率低，缓存 5 分钟）
-purchase_cache = {"data": None, "time": None}
-PURCHASE_CACHE_TTL_SECONDS = 300  # 5 分钟
-
-# 解决跨域，让 Vue 能调用
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+from app.cache import (
+    is_purchase_cache_valid,
+    get_purchase_cache_data,
+    update_purchase_cache,
 )
 
-def format_limit(value):
-    """格式化限额显示"""
-    if pd.isna(value):
-        return "-"
-    if value == 0:
-        return "-"
-    if value >= 1e8:
-        return "不限"
-    if value < 10000:
-        return f"{value:.0f}元/日"
-    return f"{value / 10000:.0f}万/日"
-
-
-def format_amount(value):
-    """格式化金额：成交额/总市值"""
-    if pd.isna(value):
-        return "-"
-    if value >= 1e8:
-        return f"{value / 1e8:.2f}亿"
-    if value >= 1e4:
-        return f"{value / 1e4:.2f}万"
-    return f"{value:.0f}"
+logger = logging.getLogger(__name__)
 
 
 def fetch_spot_data():
@@ -117,13 +80,11 @@ def fetch_spot_data():
 
 def fetch_purchase_data():
     """获取基金净值和限额信息（直接调用东方财富 API，用 json.loads 替代 demjson 解析）"""
-    global purchase_cache
     # 检查缓存是否有效
-    if purchase_cache["data"] is not None and purchase_cache["time"] is not None:
-        elapsed = (pd.Timestamp.now() - purchase_cache["time"]).total_seconds()
-        if elapsed < PURCHASE_CACHE_TTL_SECONDS:
-            logger.info("使用缓存的净值/限额数据，缓存已 %.0f 秒", elapsed)
-            return purchase_cache["data"].copy()
+    if is_purchase_cache_valid():
+        elapsed = (pd.Timestamp.now() - _get_purchase_cache_time()).total_seconds()
+        logger.info("使用缓存的净值/限额数据，缓存已 %.0f 秒", elapsed)
+        return get_purchase_cache_data()
 
     url = "https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx"
     params = {
@@ -166,8 +127,14 @@ def fetch_purchase_data():
         result = df[["基金代码", "最新净值/万份收益", "日累计限定金额", "申购状态"]]
 
     # 更新缓存
-    purchase_cache = {"data": result, "time": pd.Timestamp.now()}
+    update_purchase_cache(result)
     return result.copy()
+
+
+def _get_purchase_cache_time():
+    """获取缓存时间（内部使用，避免循环导入）"""
+    from app.cache import purchase_cache
+    return purchase_cache["time"]
 
 
 def fetch_estimate_data():
@@ -217,114 +184,125 @@ def fetch_estimate_data():
             return pd.DataFrame(columns=["基金代码", "估算净值"])
 
 
-@app.get("/api/lof")
-def get_lof_data():
-    """获取 LOF 实时数据 + 溢价率 + 限额"""
-    global cache_data
-    try:
-        logger.info("开始获取 LOF 数据...")
+def fetch_ths_kline(fund_code: str, max_days: int = 120) -> pd.DataFrame | None:
+    """获取同花顺 K-line 数据（主数据源）。
+    同花顺换手率基于场内份额，可直接算出准确的场内份额。
+    返回字段: date, price, volume(手), turnover(万元), share_volume(万份)
+    """
+    current_year = datetime.now().year
+    years = [current_year, current_year - 1]
+    ths_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"http://stockpage.10jqka.com.cn/{fund_code}/",
+    }
+    all_rows = []
+    for year in years:
+        url = f"http://d.10jqka.com.cn/v6/line/hs_{fund_code}/01/{year}.js"
+        try:
+            r = requests.get(url, headers=ths_headers, timeout=30)
+            r.raise_for_status()
+            content = r.text
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1:
+                continue
+            data = json.loads(content[start:end + 1])
+            data_str = data.get("data", "")
+            if not data_str:
+                continue
+            for day_str in data_str.split(";"):
+                parts = day_str.split(",")
+                if len(parts) < 8:
+                    continue
+                date_raw = parts[0]
+                date = f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:]}"
+                vol_shares = float(parts[5])
+                turnover_rate = float(parts[7])
+                # 同花顺换手率基于场内份额：换手率(%) = 成交量(股) / 场内份额(股) * 100
+                # => 场内份额(万份) = 成交量(股) / (换手率(%) / 100) / 10000
+                share_volume = round(vol_shares / turnover_rate / 100, 2) if turnover_rate > 0 else None
+                all_rows.append({
+                    "date": date,
+                    "price": float(parts[4]),
+                    "volume": round(vol_shares / 100, 2),  # 手
+                    "turnover": round(float(parts[6]) / 10000, 2),  # 万元
+                    "share_volume": share_volume,
+                })
+        except Exception as e:
+            logger.warning("同花顺 %s 年数据获取失败：%s", year, e)
 
-        # 1. 并行获取三个数据源（串行→并行，总耗时从 ~9s 降至 ~3-4s）
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_spot = executor.submit(fetch_spot_data)
-            future_purchase = executor.submit(fetch_purchase_data)
-            future_estimate = executor.submit(fetch_estimate_data)
+    if not all_rows:
+        return None
+    df = pd.DataFrame(all_rows)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    return df.tail(max_days).reset_index(drop=True)
 
-            spot = future_spot.result(timeout=30)
-            logger.info("LOF 实时数据获取成功，共 %d 条", len(spot))
 
-            purchase = future_purchase.result(timeout=30)
-            logger.info("基金净值/限额数据获取成功，共 %d 条", len(purchase))
+def fetch_em_kline(fund_code: str, secid: str, max_days: int = 120) -> pd.DataFrame | None:
+    """获取东方财富 K-line 数据（备用数据源）。
+    东方财富换手率基于总份额，算出的 share_volume 为总份额。
+    返回字段: date, price, volume(手), turnover(万元), share_volume(万份)
+    """
+    kline_url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    kline_params = {
+        "secid": secid,
+        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": "101",
+        "fqt": "0",
+        "end": "20500101",
+        "lmt": str(max_days),
+    }
+    kline_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"https://quote.eastmoney.com/{secid.replace('.', '')}.html",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+    }
 
-            estimate = future_estimate.result(timeout=30)
-            logger.info("基金估算净值获取成功（仅LOF），共 %d 条", len(estimate))
+    last_err = None
+    session = requests.Session()
+    for attempt in range(5):
+        try:
+            if attempt > 0:
+                session = requests.Session()
+                time.sleep(1 + attempt * 0.5)
+            r = session.get(kline_url, params=kline_params, headers=kline_headers, timeout=30)
+            r.raise_for_status()
+            kline_data = r.json()
+            kline_list = kline_data.get("data", {}).get("klines", [])
+            if kline_list:
+                break
+        except Exception as e:
+            last_err = e
+            logger.warning("东方财富 K 线请求失败（尝试 %d/5）：%s", attempt + 1, e)
+            if attempt < 4:
+                time.sleep(2 ** attempt)
+    session.close()
 
-        # 1.5 提取 LOF 代码列表，提前过滤以减少后续合并计算量
-        lof_codes = set(spot["代码"].astype(str).tolist())
-        purchase = purchase[purchase["基金代码"].astype(str).isin(lof_codes)]
-        estimate = estimate[estimate["基金代码"].astype(str).isin(lof_codes)]
-        logger.info("过滤后：净值/限额 %d 条，估算净值 %d 条", len(purchase), len(estimate))
+    if not kline_list:
+        logger.error("东方财富 K 线全部失败：%s", last_err)
+        return None
 
-        # 3. 合并数据
-        df = spot.merge(
-            purchase,
-            left_on="代码",
-            right_on="基金代码",
-            how="left"
-        ).merge(
-            estimate,
-            left_on="代码",
-            right_on="基金代码",
-            how="left"
-        )
+    price_rows = []
+    for item in kline_list:
+        parts = item.split(",")
+        turnover_rate = float(parts[10]) if len(parts) > 10 and parts[10] else 0
+        volume_lots = float(parts[5]) if len(parts) > 5 and parts[5] else 0
+        # 东方财富换手率基于总份额，算出的 share_volume 为总份额
+        share_volume = round(volume_lots / turnover_rate, 2) if turnover_rate > 0 else None
+        price_rows.append({
+            "date": parts[0],
+            "price": float(parts[2]),
+            "volume": volume_lots,
+            "turnover": round(float(parts[6]) / 10000, 2) if len(parts) > 6 and parts[6] else None,
+            "share_volume": share_volume,
+        })
 
-        # 4. 计算溢价率
-        # 静态溢价率：基于最新公布的收盘净值（通常是昨日）
-        df["溢价率"] = (
-            (df["最新价"] - df["最新净值/万份收益"])
-            / df["最新净值/万份收益"]
-            * 100
-        ).round(2)
-
-        # 动态溢价率（估算溢价率）：基于实时估算净值，交易时间内更真实
-        df["估算溢价率"] = (
-            (df["最新价"] - df["估算净值"])
-            / df["估算净值"]
-            * 100
-        ).round(2)
-
-        # 5. 格式化限额
-        df["限额"] = df["日累计限定金额"].apply(format_limit)
-
-        # 6. 格式化总市值和成交额
-        df["总市值_格式化"] = df["总市值"].apply(format_amount)
-        df["成交额_格式化"] = df["成交额"].apply(format_amount)
-
-        # 7. 只保留需要的字段
-        df = df[[
-            "代码", "名称", "最新价", "涨跌幅",
-            "最新净值/万份收益", "估算净值", "溢价率", "估算溢价率",
-            "限额", "申购状态",
-            "总市值_格式化", "成交量", "成交额_格式化"
-        ]]
-
-        # 8. 格式化字段名（给前端用）
-        df.columns = [
-            "fundCode",
-            "fundName",
-            "tradePrice",
-            "increaseRate",
-            "netValue",
-            "estimateValue",
-            "premiumRate",
-            "estimatePremiumRate",
-            "purchaseLimit",
-            "purchaseStatus",
-            "fundSize",
-            "volume",
-            "turnover"
-        ]
-
-        # 8. 处理 NaN 值，避免 JSON 序列化失败
-        df = df.replace({pd.NA: "-"})
-        df = df.where(pd.notnull(df), "-")
-
-        # 9. 转成 JSON 格式
-        data = df.to_dict(orient="records")
-        cache_data = {"data": data, "time": pd.Timestamp.now()}
-        logger.info("数据返回成功，共 %d 条", len(data))
-        return {"code": 200, "data": data}
-
-    except concurrent.futures.TimeoutError:
-        logger.error("请求 akshare 数据源超时（超过 30 秒）")
-        if cache_data["data"]:
-            logger.info("返回缓存数据，缓存时间：%s", cache_data["time"])
-            return {"code": 200, "data": cache_data["data"], "cached": True}
-        return {"code": 500, "msg": "数据获取超时，请稍后重试"}
-
-    except Exception as e:
-        logger.exception("数据获取失败")
-        if cache_data["data"]:
-            logger.info("返回缓存数据，缓存时间：%s", cache_data["time"])
-            return {"code": 200, "data": cache_data["data"], "cached": True}
-        return {"code": 500, "msg": f"数据获取失败：{str(e)}"}
+    df = pd.DataFrame(price_rows)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    return df

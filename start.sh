@@ -72,7 +72,7 @@ start_backend() {
 
     # 激活虚拟环境并启动
     source venv/bin/activate
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
     BACK_PID=$!
     log_info "后端服务已启动 (PID: $BACK_PID, http://localhost:8000)"
 }
